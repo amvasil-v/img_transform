@@ -3,22 +3,41 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+static void calculate_scale_preserve(scale_stream_t *ctx);
 
-void scale_stream_init(scale_stream_t *ctx, size_t in_width, size_t in_height, size_t out_width, size_t out_height)
+void scale_stream_init(scale_stream_t *ctx, size_t in_width, size_t in_height)
 {
-    //fill ctx
     ctx->in_width = in_width;
     ctx->in_height = in_height;
-    ctx->out_width = out_width;
-    ctx->out_height = out_height;
-    ctx->x_ratio = ((float)(in_width - 1)) / out_width;
-    ctx->y_ratio = ((float)(in_height - 1)) / out_height;
-
     for (int i = 0; i < SCALE_STREAM_MAX_ROWS; i++) {
         ctx->in_rows[i].buf = NULL;
         ctx->in_rows[i].row = 0;
     }
     ctx->in_width_bytes = (ctx->in_width + 7) / 8;
+}
+
+void scale_stream_scale_init(scale_stream_t *ctx, size_t display_width, size_t display_height, scale_type_t type)
+{
+    ctx->display_width = display_width;
+    ctx->display_height = display_height;
+
+    switch (type)
+    {
+    case SCALE_TYPE_PRESERVE:
+        calculate_scale_preserve(ctx);
+        break;
+    case SCALE_TYPE_FILL: /* fallthru */
+    default:
+        ctx->out_width = display_width;
+        ctx->out_height = display_height;
+        break;
+    }
+
+    ctx->x_ratio = ((float)(ctx->in_width - 1)) / ctx->out_width;
+    ctx->y_ratio = ((float)(ctx->in_height - 1)) / ctx->out_height;
+
+    ctx->offset_x = (ctx->display_width - ctx->out_width) / 2;
+    ctx->offset_y = (ctx->display_height - ctx->out_height) / 2;
 }
 
 uint8_t scale_stream_row_ready(scale_stream_t *ctx, size_t row_idx)
@@ -98,12 +117,13 @@ int scale_stream_feed(scale_stream_t *ctx, size_t x, size_t y, uint8_t value)
     return 0;
 }
 
-static inline void set_out_row_pixel(uint8_t *buf, size_t x, uint8_t val)
+static inline void set_out_row_pixel(scale_stream_t *ctx, uint8_t *buf, size_t x, uint8_t val)
 {
+    size_t pos = x + ctx->offset_x;
     if (val)
-        buf[IN_PIXEL_IDX(x)] |= IN_PIXEL_MASK(x);
+        buf[IN_PIXEL_IDX(pos)] |= IN_PIXEL_MASK(pos);
     else
-        buf[IN_PIXEL_IDX(x)] &= ~IN_PIXEL_MASK(x);
+        buf[IN_PIXEL_IDX(pos)] &= ~IN_PIXEL_MASK(pos);
 }
 
 static uint8_t* find_input_row(scale_stream_t *ctx, int row)
@@ -149,7 +169,7 @@ int scale_stream_process_out_row(scale_stream_t *ctx, size_t row, uint8_t *out_r
         gray = (int)(A * (1 - x_diff) * (1 - y_diff) + B * (x_diff) * (1 - y_diff) +
                      C * (y_diff) * (1 - x_diff) + D * (x_diff * y_diff));
 
-        set_out_row_pixel(out_row_buf, j, (gray >= BILINEAR_SCALE_GRAY_LEVEL));
+        set_out_row_pixel(ctx, out_row_buf, j, (gray >= BILINEAR_SCALE_GRAY_LEVEL));
     }
 
     return 0;
@@ -167,4 +187,21 @@ void scale_stream_release(scale_stream_t *ctx)
 size_t scale_stream_check_row(scale_stream_t *ctx, size_t out_row)
 {
     return (int)(ctx->y_ratio * out_row) + 1;
+}
+
+static void calculate_scale_preserve(scale_stream_t *ctx)
+{
+    float w_scale = (float)ctx->display_width / (float)ctx->in_width;
+    float h_scale = (float)ctx->display_height / (float)ctx->in_height;
+
+    if (w_scale <= h_scale)
+    {
+        ctx->out_width = ctx->display_width;
+        ctx->out_height = ctx->in_height * w_scale;        
+    }
+    else
+    {
+        ctx->out_width = ctx->in_width * h_scale;
+        ctx->out_height = ctx->display_height;
+    }
 }

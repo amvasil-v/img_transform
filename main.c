@@ -20,13 +20,6 @@ struct _picture_t {
 };
 typedef struct _picture_t picture_t;
 
-enum _scale_type_t {
-    SCALE_TYPE_FILL = 0,
-    SCALE_TYPE_PRESERVE,
-    SCALE_TYPE_COMBINED
-};
-typedef enum _scale_type_t scale_type_t;
-
 static int save_to_png(uint8_t *buf, size_t width, size_t height);
 static picture_t *picture_alloc(uint32_t w, uint32_t h);
 static void picture_init(pngle_t *pngle, uint32_t w, uint32_t h);
@@ -71,8 +64,10 @@ static void picture_init(pngle_t *pngle, uint32_t w, uint32_t h)
     printf("Create %u by %u picture\n", w, h);
     out_width_bytes = (display_width + 7) / 8;
     out_buf = (uint8_t *)malloc(out_width_bytes * display_height);
-    memset(out_buf, 0x00, out_width_bytes * display_height);
-    scale_stream_init(&scale_ctx, w, h, display_width, display_height);
+    memset(out_buf, 0xFF, out_width_bytes * display_height);
+    scale_stream_init(&scale_ctx, w, h);
+    scale_stream_scale_init(&scale_ctx, display_width, display_height, SCALE_TYPE_PRESERVE);
+    scale_ctx.out_width_bytes = out_width_bytes;
     draw_error = 0;
     draw_curr_row = 0;
 }
@@ -128,7 +123,7 @@ static void picture_draw(pngle_t *pngle, uint32_t x, uint32_t y, uint32_t w, uin
                 break;
             }
             if (scale_stream_process_out_row(&scale_ctx, draw_curr_row, 
-             &out_buf[draw_curr_row * out_width_bytes])) {
+             &out_buf[(draw_curr_row + scale_ctx.offset_y) * scale_ctx.out_width_bytes])) {
                 printf("Draw error at %u %u\n", x, y);
                 draw_error = -1;
                 return;
@@ -145,8 +140,8 @@ static void picture_done(pngle_t *pngle)
         printf("PNG scale transform failed\n");
     } else {
         printf("Done %lu x %lu image\n", scale_ctx.out_width, scale_ctx.out_height);
-        save_to_png(out_buf, scale_ctx.out_width, scale_ctx.out_height);
-        printf("Picture saved to file\n");
+        save_to_png(out_buf, display_width, display_height);
+        printf("Picture %lux%lu saved to file\n", display_width, display_height);
     }
       
     scale_stream_release(&scale_ctx);
@@ -252,87 +247,3 @@ static int save_to_png(uint8_t *buf, size_t width, size_t height)
     return 0;
 }
 
-#define BILINEAR_SCALE_GRAY_LEVEL       180
-
-
-static void bilinear_binary(picture_t *in, picture_t *out)
-{
-    int A, B, C, D, x, y, gray;
-    int w = in->width;
-    int h = in->height;
-    int w2 = out->width;
-    int h2 = out->height;
-    float x_ratio = ((float)(w - 1)) / w2;
-    float y_ratio = ((float)(h - 1)) / h2;
-    float x_diff, y_diff;
-
-    for (int i = 0; i < h2; i++)
-    {
-        for (int j = 0; j < w2; j++)
-        {
-            x = (int)(x_ratio * j);
-            y = (int)(y_ratio * i);
-            x_diff = (x_ratio * j) - x;
-            y_diff = (y_ratio * i) - y;
-
-            A = picture_get_pixel(in, x, y) ? 0xFF : 0;
-            B = picture_get_pixel(in, x + 1, y) ? 0xFF : 0;
-            C = picture_get_pixel(in, x, y + 1) ? 0xFF : 0;
-            D = picture_get_pixel(in, x + 1, y + 1) ? 0xFF : 0;
-
-            // Y = A(1-w)(1-h) + B(w)(1-h) + C(h)(1-w) + Dwh
-            gray = (int)(A * (1 - x_diff) * (1 - y_diff) + B * (x_diff) * (1 - y_diff) +
-                         C * (y_diff) * (1 - x_diff) + D * (x_diff * y_diff));
-
-            picture_set_pixel(out, j, i, (gray >= BILINEAR_SCALE_GRAY_LEVEL));
-        }
-    }
-}
-
-static picture_t *picture_scale(picture_t *in, size_t out_w, size_t out_h)
-{
-    picture_t *out = picture_alloc(out_w, out_h);
-
-    bilinear_binary(in, out);
-    return out;
-}
-
-static void calculate_scale_preserve(size_t in_w, size_t in_h, size_t *out_w, size_t *out_h)
-{
-    float w_scale = (float)display_width / (float)in_w;
-    float h_scale = (float)display_height / (float)in_h;
-
-    if (w_scale <= h_scale)
-    {
-        *out_w = display_width;
-        *out_h = in_h * w_scale;        
-    }
-    else
-    {
-        *out_w = in_w * h_scale;
-        *out_h = display_height;
-    }
-}
-
-static picture_t *scale_picture_for_display(picture_t *pic, scale_type_t type)
-{
-    size_t out_w = display_width;
-    size_t out_h = display_height;
-
-    switch (type)
-    {
-    case SCALE_TYPE_FILL:
-        break;
-    case SCALE_TYPE_PRESERVE:
-        calculate_scale_preserve(pic->width, pic->height, &out_w, &out_h);
-    default:
-        break;
-    }
-
-    if (out_w > display_width || out_h > display_height) {
-        printf("Scaling failed\n");
-        return NULL;
-    }
-
-    return picture_scale(pic, out_w, out_h);
-}
