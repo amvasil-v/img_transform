@@ -11,8 +11,9 @@
 #include "png.h"
 #include "scale_stream.h"
 
-static const size_t display_width = 640;
-static const size_t display_height = 385;
+#define DISPLAY_WIDTH              640
+#define DISPLAY_HEIGHT             385
+
 struct _picture_t {
     size_t width;
     size_t height;
@@ -42,6 +43,7 @@ int main(void)
     return 0;
 }
 
+static uint8_t tmp_buf[(DISPLAY_WIDTH + 7) / 8 * SCALE_STREAM_MAX_ROWS];
 static uint8_t *out_buf = NULL;
 static size_t out_width_bytes;
 
@@ -62,13 +64,16 @@ static int draw_curr_row = 0;
 static void picture_init(pngle_t *pngle, uint32_t w, uint32_t h)
 {
     printf("Create %u by %u picture\n", w, h);
-    out_width_bytes = (display_width + 7) / 8;
-    out_buf = (uint8_t *)malloc(out_width_bytes * display_height);
-    memset(out_buf, 0xFF, out_width_bytes * display_height);
-    scale_stream_init(&scale_ctx, w, h);
-    scale_stream_scale_init(&scale_ctx, display_width, display_height, SCALE_TYPE_PRESERVE);
-    scale_ctx.out_width_bytes = out_width_bytes;
     draw_error = 0;
+    out_width_bytes = (DISPLAY_WIDTH + 7) / 8;
+    out_buf = (uint8_t *)malloc(out_width_bytes * DISPLAY_HEIGHT);
+    memset(out_buf, 0xFF, out_width_bytes * DISPLAY_HEIGHT);
+    scale_stream_init(&scale_ctx, w, h);
+    scale_stream_scale_init(&scale_ctx, DISPLAY_WIDTH, DISPLAY_HEIGHT, SCALE_TYPE_PRESERVE);
+    if (scale_stream_buffer_init(&scale_ctx, tmp_buf, sizeof(tmp_buf))) {
+        printf("Failed to init temp buffer\n");
+        draw_error = -2;
+    }   
     draw_curr_row = 0;
 }
 
@@ -123,7 +128,7 @@ static void picture_draw(pngle_t *pngle, uint32_t x, uint32_t y, uint32_t w, uin
                 break;
             }
             if (scale_stream_process_out_row(&scale_ctx, draw_curr_row, 
-             &out_buf[(draw_curr_row + scale_ctx.offset_y) * scale_ctx.out_width_bytes])) {
+             &out_buf[(draw_curr_row + scale_ctx.offset_y) * out_width_bytes])) {
                 printf("Draw error at %u %u\n", x, y);
                 draw_error = -1;
                 return;
@@ -140,11 +145,9 @@ static void picture_done(pngle_t *pngle)
         printf("PNG scale transform failed\n");
     } else {
         printf("Done %lu x %lu image\n", scale_ctx.out_width, scale_ctx.out_height);
-        save_to_png(out_buf, display_width, display_height);
-        printf("Picture %lux%lu saved to file\n", display_width, display_height);
+        save_to_png(out_buf, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        printf("Picture %dx%d saved to file\n", DISPLAY_WIDTH, DISPLAY_HEIGHT);
     }
-      
-    scale_stream_release(&scale_ctx);
     free(out_buf);
 }
 
