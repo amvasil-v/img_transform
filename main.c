@@ -43,7 +43,7 @@ int main(void)
     return 0;
 }
 
-static uint8_t tmp_buf[(DISPLAY_WIDTH + 7) / 8 * SCALE_STREAM_MAX_ROWS];
+static uint8_t tmp_buf[DISPLAY_WIDTH * SCALE_STREAM_MAX_ROWS];
 static uint8_t *out_buf = NULL;
 static size_t out_width_bytes;
 
@@ -115,7 +115,7 @@ static void picture_draw(pngle_t *pngle, uint32_t x, uint32_t y, uint32_t w, uin
         val += rgba[i];
     if (draw_error)
         return;
-    if (scale_stream_feed(&scale_ctx, x, y, (val > black_level))) {
+    if (scale_stream_feed(&scale_ctx, x, y, val / 3)) {
         printf("Feed error at %u %u\n", x, y);
         draw_error = -1;
         return;

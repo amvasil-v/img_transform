@@ -10,7 +10,7 @@ void scale_stream_init(scale_stream_t *ctx, size_t in_width, size_t in_height)
         ctx->in_rows[i].row = 0;
         ctx->in_rows[i].used = 0;
     }
-    ctx->in_width_bytes = (ctx->in_width + 7) / 8;
+    ctx->in_width_bytes = ctx->in_width;
 }
 
 void scale_stream_scale_init(scale_stream_t *ctx, size_t display_width, size_t display_height, scale_type_t type)
@@ -90,17 +90,14 @@ static int find_row_idx(scale_stream_t *ctx, size_t row)
 #define IN_PIXEL_MASK(POS)      (1 << (POS % 8))
 #define IN_PIXEL_IDX(POS)       (POS / 8)
 
-static inline void put_pixel_row_in(scale_stream_t *ctx, uint8_t *buf, size_t x, uint8_t val)
+static inline void put_pixel_row_in(uint8_t *buf, size_t x, uint8_t val)
 {
-    if (val)
-        buf[IN_PIXEL_IDX(x)] |= IN_PIXEL_MASK(x);
-    else
-        buf[IN_PIXEL_IDX(x)] &= ~IN_PIXEL_MASK(x);
+    buf[x] = val;
 }
 
 static inline uint8_t get_pixel_row_in(uint8_t *buf, size_t x)
 {
-    return (buf[IN_PIXEL_IDX(x)] & IN_PIXEL_MASK(x)) ? 0xFF : 0;
+    return buf[x];
 }
 
 int scale_stream_feed(scale_stream_t *ctx, size_t x, size_t y, uint8_t value)
@@ -113,7 +110,7 @@ int scale_stream_feed(scale_stream_t *ctx, size_t x, size_t y, uint8_t value)
     }
     if (x >= ctx->in_width || y >= ctx->in_height)
         return -1;
-    put_pixel_row_in(ctx, ctx->in_rows[row].buf, x, value);
+    put_pixel_row_in(ctx->in_rows[row].buf, x, value);
     return 0;
 }
 
