@@ -9,6 +9,7 @@
 
 #include "pngle.h"
 #include "png.h"
+#include "scale_stream.h"
 
 static const size_t display_width = 640;
 static const size_t display_height = 385;
@@ -26,7 +27,7 @@ enum _scale_type_t {
 };
 typedef enum _scale_type_t scale_type_t;
 
-static int save_to_png(picture_t *pic);
+static int save_to_png(uint8_t *buf, size_t width, size_t height);
 static picture_t *picture_alloc(uint32_t w, uint32_t h);
 static void picture_init(pngle_t *pngle, uint32_t w, uint32_t h);
 static void picture_draw(pngle_t *pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t rgba[4]);
@@ -48,7 +49,8 @@ int main(void)
     return 0;
 }
 
-static picture_t *picture = NULL;
+static uint8_t *out_buf = NULL;
+static size_t out_width_bytes;
 
 static picture_t *picture_alloc(uint32_t w, uint32_t h)
 {
@@ -60,10 +62,19 @@ static picture_t *picture_alloc(uint32_t w, uint32_t h)
     pic->height = h;
 }
 
+scale_stream_t scale_ctx;
+static int draw_error = 0;
+static int draw_curr_row = 0;
+
 static void picture_init(pngle_t *pngle, uint32_t w, uint32_t h)
 {
     printf("Create %u by %u picture\n", w, h);
-    picture = picture_alloc(w, h);
+    out_width_bytes = (display_width + 7) / 8;
+    out_buf = (uint8_t *)malloc(out_width_bytes * display_height);
+    memset(out_buf, 0x00, out_width_bytes * display_height);
+    scale_stream_init(&scale_ctx, w, h, display_width, display_height);
+    draw_error = 0;
+    draw_curr_row = 0;
 }
 
 #define PIC_PIXEL_MASK(POS)      (1 << (POS % 8))
@@ -89,39 +100,57 @@ static uint8_t picture_get_pixel(picture_t *pic, uint32_t x, uint32_t y)
     return (pic->data[PIC_PIXEL_IDX(pos)] & PIC_PIXEL_MASK(pos)) ? UINT8_MAX : 0;
 }
 
+static uint8_t picture_buf_get_pixel(uint8_t *buf, size_t x, size_t y, size_t w)
+{
+    uint32_t pos = y * w + x;
+    return (buf[PIC_PIXEL_IDX(pos)] & PIC_PIXEL_MASK(pos)) ? UINT8_MAX : 0;
+}
+
 static void picture_draw(pngle_t *pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t rgba[4])
 {
     static const uint32_t black_level = 350;
-    if (!picture)
-        exit(-1);
     uint32_t val = 0;
+    //printf("draw %u %u\n", x, y);
     for (int i = 0; i < 3; i++)
         val += rgba[i];
-    size_t pos = y * picture->width + x;
-    if (picture_set_pixel(picture, x, y, (val > black_level))) {
-        printf("Invalid (%d, %d)\n", x, y);
-        exit(-1);
+    if (draw_error)
+        return;
+    if (scale_stream_feed(&scale_ctx, x, y, (val > black_level))) {
+        printf("Feed error at %u %u\n", x, y);
+        draw_error = -1;
+        return;
+    }
+
+    if (x == scale_ctx.in_width - 1) {
+        while (1) {
+            size_t check_row = scale_stream_check_row(&scale_ctx, draw_curr_row);
+            if (check_row > y) {
+                break;
+            }
+            if (scale_stream_process_out_row(&scale_ctx, draw_curr_row, 
+             &out_buf[draw_curr_row * out_width_bytes])) {
+                printf("Draw error at %u %u\n", x, y);
+                draw_error = -1;
+                return;
+            }
+            draw_curr_row++;
+        }
     }
 }
 
 static void picture_done(pngle_t *pngle)
 {
-    printf("Done\n");
-    if (!picture) {
-        printf("Picture not created\n");
-        return;
-    }
     
-    picture_t *out = scale_picture_for_display(picture, SCALE_TYPE_PRESERVE);
-
-    free(picture);
-    if (!out) {
-        exit(-1);
+    if (draw_error) {
+        printf("PNG scale transform failed\n");
+    } else {
+        printf("Done %lu x %lu image\n", scale_ctx.out_width, scale_ctx.out_height);
+        save_to_png(out_buf, scale_ctx.out_width, scale_ctx.out_height);
+        printf("Picture saved to file\n");
     }
-
-    save_to_png(out);
-    printf("Picture saved to file\n");
-    free(out);
+      
+    scale_stream_release(&scale_ctx);
+    free(out_buf);
 }
 
 static int process_png(const char *filename)
@@ -157,8 +186,15 @@ static int process_png(const char *filename)
     pngle_destroy(pngle);
 }
 
+#define OUT_PIXEL_MASK(POS)      (1 << (POS % 8))
+#define OUT_PIXEL_IDX(POS)       (POS / 8)
 
-static int save_to_png(picture_t *pic)
+static uint8_t get_output_pixel(uint8_t *buf, size_t x, size_t y)
+{
+    return (buf[y * out_width_bytes + OUT_PIXEL_IDX(x)] & OUT_PIXEL_MASK(x)) ? 0xFF : 0;
+}
+
+static int save_to_png(uint8_t *buf, size_t width, size_t height)
 {
     FILE *fp2 = fopen("out.png", "wb");
     if (!fp2)
@@ -183,9 +219,10 @@ static int save_to_png(picture_t *pic)
 
     // 2. Set png info like width, height, bit depth and color type
     //    in this example, I assumed grayscale image. You can change image type easily
-    int width = pic->width;
-    int height = pic->height;
     int bit_depth = 8;
+
+    printf("Write %lu by %lu picture\n", width, height);
+
     png_init_io(png_ptr, fp2);
     png_set_IHDR(png_ptr, info_ptr, width, height, bit_depth,
                  PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
@@ -203,7 +240,7 @@ static int save_to_png(picture_t *pic)
         for (int wi = 0; wi < width; wi++)
         {
             // bmp_source is source data that we convert to png
-            row_pointers[hi][wi] = picture_get_pixel(pic, wi, hi);
+            row_pointers[hi][wi] = get_output_pixel(buf, wi, hi);
         }
     }
 
@@ -216,6 +253,7 @@ static int save_to_png(picture_t *pic)
 }
 
 #define BILINEAR_SCALE_GRAY_LEVEL       180
+
 
 static void bilinear_binary(picture_t *in, picture_t *out)
 {
